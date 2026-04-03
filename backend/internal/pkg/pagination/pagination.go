@@ -36,8 +36,8 @@ func (p PaginationParams) Limit() int {
 	if p.PageSize < 1 {
 		return 20
 	}
-	if p.PageSize > 100 {
-		return 100
+	if p.PageSize > 1000 {
+		return 1000
 	}
 	return p.PageSize
 }
