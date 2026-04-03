@@ -112,7 +112,7 @@ services:
         soft: 100000
         hard: 100000
     ports:
-      - "${POSTGRES_BIND:-0.0.0.0}:${DATABASE_PORT:-5432}:5432"
+      - "${POSTGRES_BIND:-0.0.0.0}:${DATABASE_PORT:-5478}:5432"
     volumes:
       - ./postgres_data:/var/lib/postgresql/data
     environment:
@@ -142,7 +142,7 @@ services:
         soft: 100000
         hard: 100000
     ports:
-      - "${REDIS_BIND:-0.0.0.0}:${REDIS_PORT:-6379}:6379"
+      - "${REDIS_BIND:-0.0.0.0}:${REDIS_PORT:-6378}:6379"
     volumes:
       - ./redis_data:/data
     command: >
