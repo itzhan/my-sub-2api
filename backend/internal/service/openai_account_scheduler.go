@@ -178,6 +178,24 @@ func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstT
 	}
 }
 
+// Prune 清除不在 activeIDs 集合中的账号统计数据，防止内存无限增长
+func (s *openAIAccountRuntimeStats) Prune(activeIDs map[int64]struct{}) {
+	if s == nil || len(activeIDs) == 0 {
+		return
+	}
+	s.accounts.Range(func(key, value any) bool {
+		id, ok := key.(int64)
+		if !ok {
+			return true
+		}
+		if _, active := activeIDs[id]; !active {
+			s.accounts.Delete(key)
+			s.accountCount.Add(-1)
+		}
+		return true
+	})
+}
+
 func (s *openAIAccountRuntimeStats) snapshot(accountID int64) (errorRate float64, ttft float64, hasTTFT bool) {
 	if s == nil || accountID <= 0 {
 		return 0, 0, false
@@ -603,6 +621,22 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
 	}
 
+	// 候选上限：当过滤后账号数过多时，按优先级预筛以减少 Redis 负载查询命令数
+	maxCandidates := s.service.maxCandidatesForLoadQuery()
+	if maxCandidates > 0 && len(filtered) > maxCandidates {
+		sort.Slice(filtered, func(i, j int) bool {
+			return filtered[i].Priority < filtered[j].Priority
+		})
+		filtered = filtered[:maxCandidates]
+		loadReq = loadReq[:0]
+		for _, account := range filtered {
+			loadReq = append(loadReq, AccountWithConcurrency{
+				ID:             account.ID,
+				MaxConcurrency: account.EffectiveLoadFactor(),
+			})
+		}
+	}
+
 	loadMap := map[int64]*AccountLoadInfo{}
 	if s.service.concurrencyService != nil {
 		if batchLoad, loadErr := s.service.concurrencyService.GetAccountsLoadBatch(ctx, loadReq); loadErr == nil {
@@ -871,6 +905,13 @@ func (s *OpenAIGatewayService) openAIWSSessionStickyTTL() time.Duration {
 		return time.Duration(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) * time.Second
 	}
 	return openaiStickySessionTTL
+}
+
+func (s *OpenAIGatewayService) maxCandidatesForLoadQuery() int {
+	if s != nil && s.cfg != nil && s.cfg.Gateway.Scheduling.MaxCandidatesForLoadQuery > 0 {
+		return s.cfg.Gateway.Scheduling.MaxCandidatesForLoadQuery
+	}
+	return 100
 }
 
 func (s *OpenAIGatewayService) openAIWSLBTopK() int {

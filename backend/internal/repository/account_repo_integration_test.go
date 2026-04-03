@@ -26,7 +26,7 @@ type schedulerCacheRecorder struct {
 	accounts    map[int64]*service.Account
 }
 
-func (s *schedulerCacheRecorder) GetSnapshot(ctx context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {
+func (s *schedulerCacheRecorder) GetSnapshot(ctx context.Context, bucket service.SchedulerBucket, limit int) ([]*service.Account, bool, error) {
 	return nil, false, nil
 }
 
@@ -74,6 +74,10 @@ func (s *schedulerCacheRecorder) GetOutboxWatermark(ctx context.Context) (int64,
 
 func (s *schedulerCacheRecorder) SetOutboxWatermark(ctx context.Context, id int64) error {
 	return nil
+}
+
+func (s *schedulerCacheRecorder) TryLeaderLock(ctx context.Context, name string, ttl time.Duration) (bool, error) {
+	return true, nil
 }
 
 func (s *AccountRepoSuite) SetupTest() {

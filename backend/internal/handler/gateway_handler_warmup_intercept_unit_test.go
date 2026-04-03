@@ -28,7 +28,7 @@ type fakeSchedulerCache struct {
 	accounts []*service.Account
 }
 
-func (f *fakeSchedulerCache) GetSnapshot(_ context.Context, _ service.SchedulerBucket) ([]*service.Account, bool, error) {
+func (f *fakeSchedulerCache) GetSnapshot(_ context.Context, _ service.SchedulerBucket, _ int) ([]*service.Account, bool, error) {
 	return f.accounts, true, nil
 }
 func (f *fakeSchedulerCache) SetSnapshot(_ context.Context, _ service.SchedulerBucket, _ []service.Account) error {
@@ -50,6 +50,9 @@ func (f *fakeSchedulerCache) ListBuckets(_ context.Context) ([]service.Scheduler
 }
 func (f *fakeSchedulerCache) GetOutboxWatermark(_ context.Context) (int64, error) { return 0, nil }
 func (f *fakeSchedulerCache) SetOutboxWatermark(_ context.Context, _ int64) error { return nil }
+func (f *fakeSchedulerCache) TryLeaderLock(_ context.Context, _ string, _ time.Duration) (bool, error) {
+	return true, nil
+}
 
 type fakeGroupRepo struct {
 	group *service.Group

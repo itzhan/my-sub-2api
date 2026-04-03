@@ -20,6 +20,13 @@ var (
 
 const outboxEventTimeout = 2 * time.Minute
 
+// localSnapshotEntry 本地进程内快照缓存条目
+type localSnapshotEntry struct {
+	accounts []Account
+	useMixed bool
+	fetchedAt time.Time
+}
+
 type SchedulerSnapshotService struct {
 	cache         SchedulerCache
 	outboxRepo    SchedulerOutboxRepository
@@ -32,6 +39,7 @@ type SchedulerSnapshotService struct {
 	fallbackLimit *fallbackLimiter
 	lagMu         sync.Mutex
 	lagFailures   int
+	localCache    sync.Map // bucket.String() -> *localSnapshotEntry
 }
 
 func NewSchedulerSnapshotService(
@@ -101,12 +109,26 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	mode := s.resolveMode(platform, hasForcePlatform)
 	bucket := s.bucketFor(groupID, platform, mode)
 
+	// 优先查询本地进程内缓存，避免每次请求都从 Redis 读取全部账号
+	if ttl := s.localCacheTTL(); ttl > 0 {
+		if entry, ok := s.localCache.Load(bucket.String()); ok {
+			if cached := entry.(*localSnapshotEntry); time.Since(cached.fetchedAt) < ttl {
+				// 返回浅拷贝，防止调用方修改 slice 元素污染缓存
+				copied := make([]Account, len(cached.accounts))
+				copy(copied, cached.accounts)
+				return copied, cached.useMixed, nil
+			}
+		}
+	}
+
 	if s.cache != nil {
-		cached, hit, err := s.cache.GetSnapshot(ctx, bucket)
+		cached, hit, err := s.cache.GetSnapshot(ctx, bucket, s.snapshotReadLimit())
 		if err != nil {
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
-			return derefAccounts(cached), useMixed, nil
+			accounts := derefAccounts(cached)
+			s.updateLocalCache(bucket, accounts, useMixed)
+			return accounts, useMixed, nil
 		}
 	}
 
@@ -128,6 +150,7 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 		}
 	}
 
+	s.updateLocalCache(bucket, accounts, useMixed)
 	return accounts, useMixed, nil
 }
 
@@ -190,6 +213,14 @@ func (s *SchedulerSnapshotService) runOutboxWorker(interval time.Duration) {
 	for {
 		select {
 		case <-ticker.C:
+			if s.isLeaderElectionEnabled() && s.cache != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				ok, err := s.cache.TryLeaderLock(ctx, "outbox", interval+5*time.Second)
+				cancel()
+				if err != nil || !ok {
+					continue
+				}
+			}
 			s.pollOutbox()
 		case <-s.stopCh:
 			return
@@ -204,6 +235,14 @@ func (s *SchedulerSnapshotService) runFullRebuildWorker(interval time.Duration) 
 	for {
 		select {
 		case <-ticker.C:
+			if s.isLeaderElectionEnabled() && s.cache != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				ok, err := s.cache.TryLeaderLock(ctx, "rebuild", interval+30*time.Second)
+				cancel()
+				if err != nil || !ok {
+					continue
+				}
+			}
 			if err := s.triggerFullRebuild("interval"); err != nil {
 				logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] full rebuild failed: %v", err)
 			}
@@ -517,6 +556,9 @@ func (s *SchedulerSnapshotService) rebuildBucket(ctx context.Context, bucket Sch
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild cache failed: bucket=%s reason=%s err=%v", bucket.String(), reason, err)
 		return err
 	}
+	// 同步更新本地缓存，让后续请求立即命中
+	useMixed := bucket.Mode == SchedulerModeMixed
+	s.updateLocalCache(bucket, accounts, useMixed)
 	slog.Debug("[Scheduler] rebuild ok", "bucket", bucket.String(), "reason", reason, "size", len(accounts))
 	return nil
 }
@@ -725,6 +767,52 @@ func (s *SchedulerSnapshotService) outboxPollInterval() time.Duration {
 		return time.Second
 	}
 	return time.Duration(sec) * time.Second
+}
+
+func (s *SchedulerSnapshotService) snapshotReadLimit() int {
+	if s.cfg == nil {
+		return 0
+	}
+	return s.cfg.Gateway.Scheduling.SnapshotReadLimit
+}
+
+func (s *SchedulerSnapshotService) isLeaderElectionEnabled() bool {
+	return s.cfg != nil && s.cfg.Gateway.Scheduling.LeaderElectionEnabled
+}
+
+func (s *SchedulerSnapshotService) localCacheTTL() time.Duration {
+	if s.cfg == nil {
+		return 0
+	}
+	sec := s.cfg.Gateway.Scheduling.LocalSnapshotCacheTTLSeconds
+	if sec <= 0 {
+		return 0
+	}
+	return time.Duration(sec) * time.Second
+}
+
+func (s *SchedulerSnapshotService) updateLocalCache(bucket SchedulerBucket, accounts []Account, useMixed bool) {
+	if s.localCacheTTL() <= 0 {
+		return
+	}
+	s.localCache.Store(bucket.String(), &localSnapshotEntry{
+		accounts:  accounts,
+		useMixed:  useMixed,
+		fetchedAt: time.Now(),
+	})
+}
+
+// InvalidateLocalCache 清除指定 bucket 的本地缓存（用于 outbox 事件处理后立即生效）
+func (s *SchedulerSnapshotService) InvalidateLocalCache(bucket SchedulerBucket) {
+	s.localCache.Delete(bucket.String())
+}
+
+// InvalidateAllLocalCache 清除所有本地缓存
+func (s *SchedulerSnapshotService) InvalidateAllLocalCache() {
+	s.localCache.Range(func(key, value any) bool {
+		s.localCache.Delete(key)
+		return true
+	})
 }
 
 func (s *SchedulerSnapshotService) fullRebuildInterval() time.Duration {

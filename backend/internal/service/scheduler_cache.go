@@ -46,7 +46,8 @@ func ParseSchedulerBucket(raw string) (SchedulerBucket, bool) {
 // SchedulerCache 负责调度快照与账号快照的缓存读写。
 type SchedulerCache interface {
 	// GetSnapshot 读取快照并返回命中与否（ready + active + 数据完整）。
-	GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error)
+	// limit > 0 时仅读取前 limit 个账号（按优先级排序），0 表示全部读取。
+	GetSnapshot(ctx context.Context, bucket SchedulerBucket, limit int) ([]*Account, bool, error)
 	// SetSnapshot 写入快照并切换激活版本。
 	SetSnapshot(ctx context.Context, bucket SchedulerBucket, accounts []Account) error
 	// GetAccount 获取单账号快照。
@@ -65,4 +66,7 @@ type SchedulerCache interface {
 	GetOutboxWatermark(ctx context.Context) (int64, error)
 	// SetOutboxWatermark 保存 outbox 水位。
 	SetOutboxWatermark(ctx context.Context, id int64) error
+	// TryLeaderLock 尝试获取 leader 锁（用于多实例部署时仅一个实例执行后台任务）。
+	// name 为锁名称（如 "outbox"、"rebuild"），ttl 为锁过期时间。
+	TryLeaderLock(ctx context.Context, name string, ttl time.Duration) (bool, error)
 }

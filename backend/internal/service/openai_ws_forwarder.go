@@ -1152,8 +1152,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
 			headers.Set("chatgpt-account-id", chatgptAccountID)
 		}
-		headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 	}
+	codexProfile := resolveOpenAIUpstreamCodexProfile(c, account)
+	headers.Set("originator", codexProfile.Originator)
 
 	betaValue := openAIWSBetaV2Value
 	if decision.Transport == OpenAIUpstreamTransportResponsesWebsocket {
@@ -1161,23 +1162,8 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	}
 	headers.Set("OpenAI-Beta", betaValue)
 
-	customUA := ""
-	if account != nil {
-		customUA = account.GetOpenAIUserAgent()
-	}
-	if strings.TrimSpace(customUA) != "" {
-		headers.Set("user-agent", customUA)
-	} else if c != nil {
-		if ua := strings.TrimSpace(c.GetHeader("User-Agent")); ua != "" {
-			headers.Set("user-agent", ua)
-		}
-	}
-	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-		headers.Set("user-agent", codexCLIUserAgent)
-	}
-	if account != nil && account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(headers.Get("user-agent")) {
-		headers.Set("user-agent", codexCLIUserAgent)
-	}
+	// 所有 OpenAI 下游转发统一伪装为 Codex。
+	headers.Set("user-agent", codexProfile.UserAgent)
 
 	return headers, sessionResolution
 }

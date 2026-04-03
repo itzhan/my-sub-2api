@@ -18,7 +18,7 @@ type openAISnapshotCacheStub struct {
 	accountsByID     map[int64]*Account
 }
 
-func (s *openAISnapshotCacheStub) GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error) {
+func (s *openAISnapshotCacheStub) GetSnapshot(ctx context.Context, bucket SchedulerBucket, limit int) ([]*Account, bool, error) {
 	if len(s.snapshotAccounts) == 0 {
 		return nil, false, nil
 	}

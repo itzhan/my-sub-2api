@@ -461,7 +461,7 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthStoreFalseByDefault(t *testing.T
 	require.Equal(t, isolateOpenAISessionID(0, "conv-oauth-1"), captureDialer.lastHeaders.Get("conversation_id"))
 }
 
-func TestOpenAIGatewayService_Forward_WSv2_OAuthOriginatorCompatibility(t *testing.T) {
+func TestOpenAIGatewayService_Forward_WSv2_OAuthAlwaysUsesCodexIdentity(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
@@ -469,10 +469,11 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthOriginatorCompatibility(t *testi
 		userAgent      string
 		originator     string
 		wantOriginator string
+		wantUserAgent  string
 	}{
-		{name: "desktop originator preserved", originator: "Codex Desktop", wantOriginator: "Codex Desktop"},
-		{name: "vscode originator preserved", originator: "codex_vscode", wantOriginator: "codex_vscode"},
-		{name: "official ua fallback to codex_cli_rs", userAgent: "Codex Desktop/1.2.3", wantOriginator: "codex_cli_rs"},
+		{name: "desktop originator", originator: "Codex Desktop", wantOriginator: "codex_chatgpt_desktop", wantUserAgent: "codex_chatgpt_desktop/" + codexCLIVersion},
+		{name: "vscode originator", originator: "codex_vscode", wantOriginator: "codex_vscode", wantUserAgent: "codex_vscode/" + codexCLIVersion},
+		{name: "official ua", userAgent: "Codex Desktop/1.2.3", wantOriginator: "codex_chatgpt_desktop", wantUserAgent: "codex_chatgpt_desktop/1.2.3"},
 	}
 
 	for _, tt := range tests {
@@ -537,6 +538,7 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthOriginatorCompatibility(t *testi
 			require.NoError(t, err)
 			require.NotNil(t, result)
 			require.Equal(t, tt.wantOriginator, captureDialer.lastHeaders.Get("originator"))
+			require.Equal(t, tt.wantUserAgent, captureDialer.lastHeaders.Get("User-Agent"))
 		})
 	}
 }

@@ -30,7 +30,7 @@ func NewSchedulerCache(rdb *redis.Client) service.SchedulerCache {
 	return &schedulerCache{rdb: rdb}
 }
 
-func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {
+func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.SchedulerBucket, limit int) ([]*service.Account, bool, error) {
 	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
 	readyVal, err := c.rdb.Get(ctx, readyKey).Result()
 	if err == redis.Nil {
@@ -53,7 +53,12 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 	}
 
 	snapshotKey := schedulerSnapshotKey(bucket, activeVal)
-	ids, err := c.rdb.ZRange(ctx, snapshotKey, 0, -1).Result()
+	// limit > 0 时仅读取前 limit 个（ZSet 按优先级 score 排序），减少 Redis 传输量
+	var stop int64 = -1
+	if limit > 0 {
+		stop = int64(limit - 1)
+	}
+	ids, err := c.rdb.ZRange(ctx, snapshotKey, 0, stop).Result()
 	if err != nil {
 		return nil, false, err
 	}
@@ -242,6 +247,11 @@ func (c *schedulerCache) GetOutboxWatermark(ctx context.Context) (int64, error) 
 
 func (c *schedulerCache) SetOutboxWatermark(ctx context.Context, id int64) error {
 	return c.rdb.Set(ctx, schedulerOutboxWatermarkKey, strconv.FormatInt(id, 10), 0).Err()
+}
+
+func (c *schedulerCache) TryLeaderLock(ctx context.Context, name string, ttl time.Duration) (bool, error) {
+	key := "sched:leader:" + name
+	return c.rdb.SetNX(ctx, key, time.Now().UnixNano(), ttl).Result()
 }
 
 func schedulerBucketKey(prefix string, bucket service.SchedulerBucket) string {

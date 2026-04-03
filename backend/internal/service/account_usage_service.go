@@ -121,11 +121,75 @@ type UsageCache struct {
 	apiFlight         singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
 	antigravityFlight singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
 	openAIProbeCache  sync.Map           // accountID -> time.Time
+	stopCleanup       chan struct{}
 }
 
-// NewUsageCache 创建 UsageCache 实例
+// NewUsageCache 创建 UsageCache 实例并启动后台清理
 func NewUsageCache() *UsageCache {
-	return &UsageCache{}
+	uc := &UsageCache{
+		stopCleanup: make(chan struct{}),
+	}
+	go uc.runCacheCleanup()
+	return uc
+}
+
+// StopCleanup 停止后台清理 goroutine
+func (uc *UsageCache) StopCleanup() {
+	select {
+	case <-uc.stopCleanup:
+	default:
+		close(uc.stopCleanup)
+	}
+}
+
+// runCacheCleanup 定期淘汰过期缓存条目，防止 sync.Map 无限增长
+func (uc *UsageCache) runCacheCleanup() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+			uc.apiCache.Range(func(key, value any) bool {
+				if entry, ok := value.(*apiUsageCache); ok {
+					ttl := apiCacheTTL
+					if entry.err != nil {
+						ttl = apiErrorCacheTTL
+					}
+					if now.Sub(entry.timestamp) > ttl*2 {
+						uc.apiCache.Delete(key)
+					}
+				}
+				return true
+			})
+			uc.windowStatsCache.Range(func(key, value any) bool {
+				if entry, ok := value.(*windowStatsCache); ok {
+					if now.Sub(entry.timestamp) > windowStatsCacheTTL*2 {
+						uc.windowStatsCache.Delete(key)
+					}
+				}
+				return true
+			})
+			uc.antigravityCache.Range(func(key, value any) bool {
+				if entry, ok := value.(*antigravityUsageCache); ok {
+					if now.Sub(entry.timestamp) > apiCacheTTL*2 {
+						uc.antigravityCache.Delete(key)
+					}
+				}
+				return true
+			})
+			uc.openAIProbeCache.Range(func(key, value any) bool {
+				if t, ok := value.(time.Time); ok {
+					if now.Sub(t) > openAIProbeCacheTTL*2 {
+						uc.openAIProbeCache.Delete(key)
+					}
+				}
+				return true
+			})
+		case <-uc.stopCleanup:
+			return
+		}
+	}
 }
 
 // WindowStats 窗口期统计
@@ -620,12 +684,15 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	req.Header.Set("Originator", "codex_cli_rs")
+	profile := resolveOpenAICodexProfileByCandidates("", "codex_cli_rs/"+openAICodexProbeVersion)
+	req.Header.Set("Originator", profile.Originator)
 	req.Header.Set("Version", openAICodexProbeVersion)
-	req.Header.Set("User-Agent", codexCLIUserAgent)
+	req.Header.Set("User-Agent", profile.UserAgent)
 	if s.identityCache != nil {
 		if fp, fpErr := s.identityCache.GetFingerprint(reqCtx, account.ID); fpErr == nil && fp != nil && strings.TrimSpace(fp.UserAgent) != "" {
-			req.Header.Set("User-Agent", strings.TrimSpace(fp.UserAgent))
+			fpProfile := resolveOpenAICodexProfileByCandidates(strings.TrimSpace(fp.UserAgent))
+			req.Header.Set("Originator", fpProfile.Originator)
+			req.Header.Set("User-Agent", fpProfile.UserAgent)
 		}
 	}
 	if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {

@@ -726,6 +726,22 @@ type GatewaySchedulingConfig struct {
 	// 全量重建周期配置
 	// 全量重建周期（秒），0 表示禁用
 	FullRebuildIntervalSeconds int `mapstructure:"full_rebuild_interval_seconds"`
+
+	// 本地进程内快照缓存 TTL（秒），避免每次请求都从 Redis 读取全部账号
+	// 0 表示禁用本地缓存（每次请求都走 Redis）
+	LocalSnapshotCacheTTLSeconds int `mapstructure:"local_snapshot_cache_ttl_seconds"`
+
+	// Leader 选举：多实例部署时仅一个实例执行 outbox 轮询和全量重建
+	LeaderElectionEnabled bool `mapstructure:"leader_election_enabled"`
+
+	// 候选账号数量上限：负载查询前先按优先级预筛，减少 Redis 命令数
+	// 0 表示不限制（查询全部）
+	MaxCandidatesForLoadQuery int `mapstructure:"max_candidates_for_load_query"`
+
+	// 快照读取上限：从 Redis 读取快照时最多拉取多少个账号
+	// 大幅减少 Redis 与子服务器之间的数据传输量
+	// 0 表示不限制（读取全部）
+	SnapshotReadLimit int `mapstructure:"snapshot_read_limit"`
 }
 
 func (s *ServerConfig) Address() string {
@@ -1437,6 +1453,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.outbox_lag_rebuild_failures", 3)
 	viper.SetDefault("gateway.scheduling.outbox_backlog_rebuild_rows", 10000)
 	viper.SetDefault("gateway.scheduling.full_rebuild_interval_seconds", 300)
+	viper.SetDefault("gateway.scheduling.local_snapshot_cache_ttl_seconds", 3)
+	viper.SetDefault("gateway.scheduling.leader_election_enabled", true)
+	viper.SetDefault("gateway.scheduling.max_candidates_for_load_query", 100)
+	viper.SetDefault("gateway.scheduling.snapshot_read_limit", 500)
 	viper.SetDefault("gateway.usage_record.worker_count", 128)
 	viper.SetDefault("gateway.usage_record.queue_size", 16384)
 	viper.SetDefault("gateway.usage_record.task_timeout_seconds", 5)
@@ -2227,6 +2247,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.Scheduling.FullRebuildIntervalSeconds < 0 {
 		return fmt.Errorf("gateway.scheduling.full_rebuild_interval_seconds must be non-negative")
+	}
+	if c.Gateway.Scheduling.LocalSnapshotCacheTTLSeconds < 0 {
+		return fmt.Errorf("gateway.scheduling.local_snapshot_cache_ttl_seconds must be non-negative")
+	}
+	if c.Gateway.Scheduling.MaxCandidatesForLoadQuery < 0 {
+		return fmt.Errorf("gateway.scheduling.max_candidates_for_load_query must be non-negative")
+	}
+	if c.Gateway.Scheduling.SnapshotReadLimit < 0 {
+		return fmt.Errorf("gateway.scheduling.snapshot_read_limit must be non-negative")
 	}
 	if c.Gateway.Scheduling.OutboxLagWarnSeconds > 0 &&
 		c.Gateway.Scheduling.OutboxLagRebuildSeconds > 0 &&
