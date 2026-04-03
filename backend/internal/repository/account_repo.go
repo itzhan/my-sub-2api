@@ -813,6 +813,46 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 	return nil
 }
 
+func (r *accountRepository) BulkBindGroups(ctx context.Context, accountIDs []int64, groupIDs []int64) error {
+	if len(accountIDs) == 0 {
+		return nil
+	}
+
+	// 1. 批量删除旧绑定（1 条 SQL）
+	_, err := r.sql.ExecContext(ctx,
+		"DELETE FROM account_groups WHERE account_id = ANY($1)",
+		pq.Array(accountIDs),
+	)
+	if err != nil {
+		return err
+	}
+
+	// 2. 批量插入新绑定（1 条 SQL）
+	if len(groupIDs) > 0 {
+		valueStrings := make([]string, 0, len(accountIDs)*len(groupIDs))
+		valueArgs := make([]any, 0, len(accountIDs)*len(groupIDs)*3)
+		idx := 1
+		for _, accountID := range accountIDs {
+			for priority, groupID := range groupIDs {
+				valueStrings = append(valueStrings, "($"+itoa(idx)+", $"+itoa(idx+1)+", $"+itoa(idx+2)+")")
+				valueArgs = append(valueArgs, accountID, groupID, priority+1)
+				idx += 3
+			}
+		}
+		query := "INSERT INTO account_groups (account_id, group_id, priority) VALUES " + joinClauses(valueStrings, ", ")
+		if _, err := r.sql.ExecContext(ctx, query, valueArgs...); err != nil {
+			return err
+		}
+	}
+
+	// 3. 只发 1 个 outbox 事件（而不是 N 个）
+	payload := map[string]any{"account_ids": accountIDs, "group_ids": groupIDs}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountBulkChanged, nil, nil, payload); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue bulk bind groups failed: err=%v", err)
+	}
+	return nil
+}
+
 func (r *accountRepository) ListSchedulable(ctx context.Context) ([]service.Account, error) {
 	now := time.Now()
 	accounts, err := r.client.Account.Query().

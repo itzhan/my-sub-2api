@@ -1003,7 +1003,7 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	const maxConcurrency = 10
+	const maxConcurrency = 50
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(maxConcurrency)
 
@@ -1085,7 +1085,7 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 		}
 	}
 
-	const maxConcurrency = 10
+	const maxConcurrency = 50
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(maxConcurrency)
 

@@ -1822,25 +1822,17 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		return nil, err
 	}
 
-	// Handle group bindings per account (requires individual operations).
-	for _, accountID := range input.AccountIDs {
-		entry := BulkUpdateAccountResult{AccountID: accountID}
-
-		if input.GroupIDs != nil {
-			if err := s.accountRepo.BindGroups(ctx, accountID, *input.GroupIDs); err != nil {
-				entry.Success = false
-				entry.Error = err.Error()
-				result.Failed++
-				result.FailedIDs = append(result.FailedIDs, accountID)
-				result.Results = append(result.Results, entry)
-				continue
-			}
+	// Handle group bindings: use bulk operation instead of per-account loop.
+	if input.GroupIDs != nil {
+		if err := s.accountRepo.BulkBindGroups(ctx, input.AccountIDs, *input.GroupIDs); err != nil {
+			return nil, err
 		}
+	}
 
-		entry.Success = true
+	for _, accountID := range input.AccountIDs {
 		result.Success++
 		result.SuccessIDs = append(result.SuccessIDs, accountID)
-		result.Results = append(result.Results, entry)
+		result.Results = append(result.Results, BulkUpdateAccountResult{AccountID: accountID, Success: true})
 	}
 
 	return result, nil
