@@ -41,6 +41,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 	originalModel := anthropicReq.Model
 	applyOpenAICompatModelNormalization(&anthropicReq)
+	normalizedModel := anthropicReq.Model
 	clientStream := anthropicReq.Stream // client's original stream preference
 
 	// 2. Convert Anthropic → Responses
@@ -60,13 +61,16 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// 3. Model mapping
-	mappedModel := resolveOpenAIForwardModel(account, anthropicReq.Model, defaultMappedModel)
-	responsesReq.Model = mappedModel
+	billingModel := resolveOpenAIForwardModel(account, normalizedModel, defaultMappedModel)
+	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	responsesReq.Model = upstreamModel
 
 	logger.L().Debug("openai messages: model mapping applied",
 		zap.Int64("account_id", account.ID),
 		zap.String("original_model", originalModel),
-		zap.String("mapped_model", mappedModel),
+		zap.String("normalized_model", normalizedModel),
+		zap.String("billing_model", billingModel),
+		zap.String("upstream_model", upstreamModel),
 		zap.Bool("stream", isStream),
 	)
 
@@ -82,6 +86,27 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			return nil, fmt.Errorf("unmarshal for codex transform: %w", err)
 		}
 		codexResult := applyCodexOAuthTransform(reqBody, false, false)
+		forcedTemplateText := ""
+		if s.cfg != nil {
+			forcedTemplateText = s.cfg.Gateway.ForcedCodexInstructionsTemplate
+		}
+		templateUpstreamModel := upstreamModel
+		if codexResult.NormalizedModel != "" {
+			templateUpstreamModel = codexResult.NormalizedModel
+		}
+		existingInstructions, _ := reqBody["instructions"].(string)
+		if _, err := applyForcedCodexInstructionsTemplate(reqBody, forcedTemplateText, forcedCodexInstructionsTemplateData{
+			ExistingInstructions: strings.TrimSpace(existingInstructions),
+			OriginalModel:        originalModel,
+			NormalizedModel:      normalizedModel,
+			BillingModel:         billingModel,
+			UpstreamModel:        templateUpstreamModel,
+		}); err != nil {
+			return nil, err
+		}
+		if codexResult.NormalizedModel != "" {
+			upstreamModel = codexResult.NormalizedModel
+		}
 		if codexResult.PromptCacheKey != "" {
 			promptCacheKey = codexResult.PromptCacheKey
 		} else if promptCacheKey != "" {
@@ -182,10 +207,10 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleAnthropicStreamingResponse(resp, c, originalModel, mappedModel, startTime)
+		result, handleErr = s.handleAnthropicStreamingResponse(resp, c, originalModel, billingModel, upstreamModel, startTime)
 	} else {
 		// Client wants JSON: buffer the streaming response and assemble a JSON reply.
-		result, handleErr = s.handleAnthropicBufferedStreamingResponse(resp, c, originalModel, mappedModel, startTime)
+		result, handleErr = s.handleAnthropicBufferedStreamingResponse(resp, c, originalModel, billingModel, upstreamModel, startTime)
 	}
 
 	// Propagate ServiceTier and ReasoningEffort to result for billing
@@ -230,7 +255,8 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	resp *http.Response,
 	c *gin.Context,
 	originalModel string,
-	mappedModel string,
+	billingModel string,
+	upstreamModel string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
@@ -303,8 +329,8 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		RequestID:     requestID,
 		Usage:         usage,
 		Model:         originalModel,
-		BillingModel:  mappedModel,
-		UpstreamModel: mappedModel,
+		BillingModel:  billingModel,
+		UpstreamModel: upstreamModel,
 		Stream:        false,
 		Duration:      time.Since(startTime),
 	}, nil
@@ -319,7 +345,8 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	resp *http.Response,
 	c *gin.Context,
 	originalModel string,
-	mappedModel string,
+	billingModel string,
+	upstreamModel string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
@@ -352,8 +379,8 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			RequestID:     requestID,
 			Usage:         usage,
 			Model:         originalModel,
-			BillingModel:  mappedModel,
-			UpstreamModel: mappedModel,
+			BillingModel:  billingModel,
+			UpstreamModel: upstreamModel,
 			Stream:        true,
 			Duration:      time.Since(startTime),
 			FirstTokenMs:  firstTokenMs,

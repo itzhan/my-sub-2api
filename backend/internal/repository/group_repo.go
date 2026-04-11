@@ -49,19 +49,17 @@ func (r *groupRepository) Create(ctx context.Context, groupIn *service.Group) er
 		SetNillableImagePrice1k(groupIn.ImagePrice1K).
 		SetNillableImagePrice2k(groupIn.ImagePrice2K).
 		SetNillableImagePrice4k(groupIn.ImagePrice4K).
-		SetNillableSoraImagePrice360(groupIn.SoraImagePrice360).
-		SetNillableSoraImagePrice540(groupIn.SoraImagePrice540).
-		SetNillableSoraVideoPricePerRequest(groupIn.SoraVideoPricePerRequest).
-		SetNillableSoraVideoPricePerRequestHd(groupIn.SoraVideoPricePerRequestHD).
 		SetDefaultValidityDays(groupIn.DefaultValidityDays).
 		SetClaudeCodeOnly(groupIn.ClaudeCodeOnly).
 		SetNillableFallbackGroupID(groupIn.FallbackGroupID).
 		SetNillableFallbackGroupIDOnInvalidRequest(groupIn.FallbackGroupIDOnInvalidRequest).
 		SetModelRoutingEnabled(groupIn.ModelRoutingEnabled).
 		SetMcpXMLInject(groupIn.MCPXMLInject).
-		SetSoraStorageQuotaBytes(groupIn.SoraStorageQuotaBytes).
 		SetAllowMessagesDispatch(groupIn.AllowMessagesDispatch).
-		SetDefaultMappedModel(groupIn.DefaultMappedModel)
+		SetRequireOauthOnly(groupIn.RequireOAuthOnly).
+		SetRequirePrivacySet(groupIn.RequirePrivacySet).
+		SetDefaultMappedModel(groupIn.DefaultMappedModel).
+		SetMessagesDispatchModelConfig(groupIn.MessagesDispatchModelConfig)
 
 	// 设置模型路由配置
 	if groupIn.ModelRouting != nil {
@@ -120,17 +118,15 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetNillableImagePrice1k(groupIn.ImagePrice1K).
 		SetNillableImagePrice2k(groupIn.ImagePrice2K).
 		SetNillableImagePrice4k(groupIn.ImagePrice4K).
-		SetNillableSoraImagePrice360(groupIn.SoraImagePrice360).
-		SetNillableSoraImagePrice540(groupIn.SoraImagePrice540).
-		SetNillableSoraVideoPricePerRequest(groupIn.SoraVideoPricePerRequest).
-		SetNillableSoraVideoPricePerRequestHd(groupIn.SoraVideoPricePerRequestHD).
 		SetDefaultValidityDays(groupIn.DefaultValidityDays).
 		SetClaudeCodeOnly(groupIn.ClaudeCodeOnly).
 		SetModelRoutingEnabled(groupIn.ModelRoutingEnabled).
 		SetMcpXMLInject(groupIn.MCPXMLInject).
-		SetSoraStorageQuotaBytes(groupIn.SoraStorageQuotaBytes).
 		SetAllowMessagesDispatch(groupIn.AllowMessagesDispatch).
-		SetDefaultMappedModel(groupIn.DefaultMappedModel)
+		SetRequireOauthOnly(groupIn.RequireOAuthOnly).
+		SetRequirePrivacySet(groupIn.RequirePrivacySet).
+		SetDefaultMappedModel(groupIn.DefaultMappedModel).
+		SetMessagesDispatchModelConfig(groupIn.MessagesDispatchModelConfig)
 
 	// 显式处理可空字段：nil 需要 clear，非 nil 需要 set。
 	if groupIn.DailyLimitUSD != nil {
