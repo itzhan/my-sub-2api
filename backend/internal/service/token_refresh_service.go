@@ -281,7 +281,7 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 			return nil
 		}
 
-		// 不可重试错误（invalid_grant/invalid_client 等）直接标记 error 状态并返回
+		// 不可重试错误（invalid_grant/refresh_token_reused/invalid_client 等）直接标记 error 状态并返回
 		if isNonRetryableRefreshError(err) {
 			errorMsg := fmt.Sprintf("Token refresh failed (non-retryable): %v", err)
 			if setErr := s.accountRepo.SetError(ctx, account.ID, errorMsg); setErr != nil {
@@ -417,11 +417,12 @@ func isNonRetryableRefreshError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	nonRetryable := []string{
-		"invalid_grant",       // refresh_token 已失效
-		"invalid_client",      // 客户端配置错误
-		"unauthorized_client", // 客户端未授权
-		"access_denied",       // 访问被拒绝
-		"missing_project_id",  // 缺少 project_id
+		"invalid_grant",          // refresh_token 已失效（标准 OAuth 错误）
+		"refresh_token_reused",   // refresh_token 已被其他实例消费（OpenAI 特有）
+		"invalid_client",         // 客户端配置错误
+		"unauthorized_client",    // 客户端未授权
+		"access_denied",          // 访问被拒绝
+		"missing_project_id",     // 缺少 project_id
 		"no refresh token available",
 	}
 	for _, needle := range nonRetryable {
