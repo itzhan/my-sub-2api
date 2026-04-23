@@ -195,6 +195,10 @@ func (m *mockAccountRepoForPlatform) ResetQuotaUsed(ctx context.Context, id int6
 	return nil
 }
 
+func (m *mockAccountRepoForPlatform) BulkBindGroups(ctx context.Context, accountIDs []int64, groupIDs []int64) error {
+	return nil
+}
+
 // Verify interface implementation
 var _ AccountRepository = (*mockAccountRepoForPlatform)(nil)
 

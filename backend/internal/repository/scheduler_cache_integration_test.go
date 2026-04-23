@@ -60,7 +60,7 @@ func TestSchedulerCacheSnapshotUsesSlimMetadataButKeepsFullAccount(t *testing.T)
 
 	require.NoError(t, cache.SetSnapshot(ctx, bucket, []service.Account{account}))
 
-	snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
+	snapshot, hit, err := cache.GetSnapshot(ctx, bucket, 0)
 	require.NoError(t, err)
 	require.True(t, hit)
 	require.Len(t, snapshot, 1)

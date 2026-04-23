@@ -13,7 +13,7 @@ type snapshotHydrationCache struct {
 	accounts map[int64]*Account
 }
 
-func (c *snapshotHydrationCache) GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error) {
+func (c *snapshotHydrationCache) GetSnapshot(ctx context.Context, bucket SchedulerBucket, limit int) ([]*Account, bool, error) {
 	return c.snapshot, true, nil
 }
 
@@ -54,6 +54,10 @@ func (c *snapshotHydrationCache) GetOutboxWatermark(ctx context.Context) (int64,
 
 func (c *snapshotHydrationCache) SetOutboxWatermark(ctx context.Context, id int64) error {
 	return nil
+}
+
+func (c *snapshotHydrationCache) TryLeaderLock(ctx context.Context, name string, ttl time.Duration) (bool, error) {
+	return true, nil
 }
 
 func TestOpenAISelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedulerSnapshot(t *testing.T) {
