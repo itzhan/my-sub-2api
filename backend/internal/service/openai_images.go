@@ -383,11 +383,117 @@ func applyOpenAIImagesDefaults(req *OpenAIImagesRequest) {
 	if req.N <= 0 {
 		req.N = 1
 	}
+	sanitizeOpenAIImagesRequest(req)
 	if strings.TrimSpace(req.Model) != "" {
 		req.Model = strings.TrimSpace(req.Model)
 		return
 	}
 	req.Model = "gpt-image-2"
+}
+
+// sanitizeOpenAIImagesRequest 在请求转发前对客户端字段做"输入清洗"，把已知会被
+// 上游 Codex image_generation tool 拒绝的值替换为最接近的安全值，避免 502。
+//
+// 具体规则：
+//   - style: 上游不接受任何值 → 直接清空（不透传），避免 "Unknown parameter" 400。
+//   - output_format=webp: 上游接受字段但静默回 PNG，sub2api 这里改写为空（默认 png）
+//     与实际行为一致，避免客户端误以为拿到 webp。
+//   - output_format 其它非 png/jpeg/jpg：清空（用默认 png）。
+//   - background=transparent: gpt-image-2 不支持 → 改为 auto，记录日志。
+//     gpt-image-1 / gpt-image-1.5 实测也不支持，统一改写。
+//   - background 非 opaque/auto/空：清空。
+//   - moderation 非 auto/low/空：清空。
+//   - quality 非 low/medium/high/auto/空：清空。
+func sanitizeOpenAIImagesRequest(req *OpenAIImagesRequest) {
+	if req == nil {
+		return
+	}
+
+	// 先 Trim 一遍，让纯空白等同于空（避免下面"非空但含义为空"的歧义）
+	req.Style = strings.TrimSpace(req.Style)
+	req.OutputFormat = strings.TrimSpace(req.OutputFormat)
+	req.Background = strings.TrimSpace(req.Background)
+	req.Quality = strings.TrimSpace(req.Quality)
+	req.Moderation = strings.TrimSpace(req.Moderation)
+
+	// style: 完全不透传
+	if req.Style != "" {
+		logger.LegacyPrintf("service.openai_images",
+			"[OpenAI] dropping unsupported field style=%q (Codex image_generation tool does not accept style)",
+			req.Style)
+		req.Style = ""
+	}
+
+	// output_format
+	if v := strings.ToLower(strings.TrimSpace(req.OutputFormat)); v != "" {
+		switch v {
+		case "png", "jpeg", "jpg":
+			req.OutputFormat = v
+			if v == "jpg" {
+				req.OutputFormat = "jpeg"
+			}
+		case "webp":
+			logger.LegacyPrintf("service.openai_images",
+				"[OpenAI] output_format=webp is silently downgraded to png (upstream returns PNG regardless)")
+			req.OutputFormat = ""
+		default:
+			logger.LegacyPrintf("service.openai_images",
+				"[OpenAI] dropping unsupported output_format=%q (allowed: png, jpeg)", v)
+			req.OutputFormat = ""
+		}
+	}
+
+	// background
+	if v := strings.ToLower(strings.TrimSpace(req.Background)); v != "" {
+		switch v {
+		case "opaque", "auto":
+			req.Background = v
+		case "transparent":
+			logger.LegacyPrintf("service.openai_images",
+				"[OpenAI] background=transparent is not supported by gpt-image-* models, falling back to auto")
+			req.Background = "auto"
+		default:
+			logger.LegacyPrintf("service.openai_images",
+				"[OpenAI] dropping unsupported background=%q (allowed: opaque, auto)", v)
+			req.Background = ""
+		}
+	}
+
+	// quality
+	if v := strings.ToLower(strings.TrimSpace(req.Quality)); v != "" {
+		switch v {
+		case "low", "medium", "high", "auto":
+			req.Quality = v
+		default:
+			logger.LegacyPrintf("service.openai_images",
+				"[OpenAI] dropping unsupported quality=%q (allowed: low, medium, high, auto)", v)
+			req.Quality = ""
+		}
+	}
+
+	// moderation
+	if v := strings.ToLower(strings.TrimSpace(req.Moderation)); v != "" {
+		switch v {
+		case "auto", "low":
+			req.Moderation = v
+		default:
+			logger.LegacyPrintf("service.openai_images",
+				"[OpenAI] dropping unsupported moderation=%q (allowed: auto, low)", v)
+			req.Moderation = ""
+		}
+	}
+
+	// output_compression: clamp to [0, 100]
+	if req.OutputCompression != nil {
+		v := *req.OutputCompression
+		if v < 0 {
+			v = 0
+		}
+		if v > 100 {
+			v = 100
+		}
+		*req.OutputCompression = v
+	}
 }
 
 func isOpenAIImageGenerationModel(model string) bool {
@@ -467,15 +573,48 @@ func isOpenAINativeImageOption(name string) bool {
 	}
 }
 
+// normalizeOpenAIImageSizeTier 将请求的 size 字符串归类到计费档位 (1K / 2K / 4K)。
+// 上游 Codex image_generation tool 实测接受 768~3840 范围内大量尺寸（远超官方文档列表），
+// 此函数按"长边像素"和"总像素"切档，确保 4K 真 4K 不被低估为 2K 计费：
+//   - 长边 ≤ 1024 且总像素 ≤ ~1.05MP → 1K
+//   - 总像素 ≥ 2.5MP 或 长边 ≥ 2048   → 4K
+//   - 其它（含未知 / 解析失败 / "auto"）→ 2K
 func normalizeOpenAIImageSizeTier(size string) string {
-	switch strings.ToLower(strings.TrimSpace(size)) {
-	case "1024x1024":
-		return "1K"
-	case "1536x1024", "1024x1536", "1792x1024", "1024x1792", "", "auto":
+	s := strings.ToLower(strings.TrimSpace(size))
+	if s == "" || s == "auto" {
 		return "2K"
+	}
+	w, h, ok := parseOpenAIImageSizeDimensions(s)
+	if !ok {
+		return "2K"
+	}
+	pixels := w * h
+	maxSide := w
+	if h > maxSide {
+		maxSide = h
+	}
+	switch {
+	case pixels >= 2_500_000 || maxSide >= 2048:
+		return "4K"
+	case maxSide <= 1024 && pixels <= 1_100_000:
+		return "1K"
 	default:
 		return "2K"
 	}
+}
+
+// parseOpenAIImageSizeDimensions 解析 "1024x1024" / "3840x2160" 这类尺寸字符串。
+func parseOpenAIImageSizeDimensions(s string) (int, int, bool) {
+	parts := strings.SplitN(s, "x", 2)
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	w, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+	h, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err1 != nil || err2 != nil || w <= 0 || h <= 0 {
+		return 0, 0, false
+	}
+	return w, h, true
 }
 
 func (s *OpenAIGatewayService) ForwardImages(
