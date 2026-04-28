@@ -226,13 +226,16 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 
 	// 9. Handle normal response
 	// Upstream is always streaming; choose response format based on client preference.
+	// 计算 respondedModel：当客户端请求模型与映射后的 billing 模型跨族变化时返回 billing，
+	// 否则保留客户端原始名（保留 -xhigh 等语义后缀）。
+	respondedModel := chooseRespondedAnthropicModel(originalModel, normalizedModel, billingModel)
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleAnthropicStreamingResponse(resp, c, originalModel, billingModel, upstreamModel, startTime)
+		result, handleErr = s.handleAnthropicStreamingResponse(resp, c, originalModel, billingModel, upstreamModel, respondedModel, startTime)
 	} else {
 		// Client wants JSON: buffer the streaming response and assemble a JSON reply.
-		result, handleErr = s.handleAnthropicBufferedStreamingResponse(resp, c, originalModel, billingModel, upstreamModel, startTime)
+		result, handleErr = s.handleAnthropicBufferedStreamingResponse(resp, c, originalModel, billingModel, upstreamModel, respondedModel, startTime)
 	}
 
 	// Propagate ServiceTier and ReasoningEffort to result for billing
@@ -279,6 +282,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	originalModel string,
 	billingModel string,
 	upstreamModel string,
+	respondedModel string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
@@ -349,7 +353,11 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	// accumulated delta events so the client receives the full content.
 	acc.SupplementResponseOutput(finalResponse)
 
-	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, originalModel)
+	// 返回给下游的 model 字段：当客户端的 model 经过映射规则跨族变化时（如
+	// claude-sonnet-4 → gpt-5.4），返回映射后的 billingModel，让客户端看到
+	// 实际跑的是 OpenAI 模型；当只是后缀规范化（如 gpt-5.4-xhigh → gpt-5.4）
+	// 没有跨族变化时，保留 originalModel，避免丢失用户语义后缀。
+	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, respondedModel)
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -378,6 +386,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	originalModel string,
 	billingModel string,
 	upstreamModel string,
+	respondedModel string,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
@@ -392,7 +401,9 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	c.Writer.WriteHeader(http.StatusOK)
 
 	state := apicompat.NewResponsesEventToAnthropicState()
-	state.Model = originalModel
+	// 流式响应里所有事件的 model 字段使用 caller 传下来的 respondedModel，
+	// 与非流式分支保持一致。映射发生时为 billingModel；否则保留 originalModel。
+	state.Model = respondedModel
 	var usage OpenAIUsage
 	var firstTokenMs *int
 	firstChunk := true
@@ -596,4 +607,45 @@ func writeAnthropicError(c *gin.Context, statusCode int, errType, message string
 			"message": message,
 		},
 	})
+}
+
+// chooseRespondedAnthropicModel decides which model name to return to the
+// downstream client in /v1/messages responses.
+//
+// 区分两种映射情形，让客户端拿到"反映真实运行环境"的 model 字段：
+//
+//  1. 跨族映射（platform mapping）：客户端送 claude-sonnet-4，group/account
+//     的 default_mapped_model 把它改成 gpt-5.4。billingModel != normalizedModel，
+//     此时返回 billingModel，让客户端看到 model="gpt-5.4"。
+//
+//  2. 仅后缀规范化（suffix normalization）：客户端送 gpt-5.4-xhigh，本地
+//     applyOpenAICompatModelNormalization 把后缀 -xhigh 剥掉得到 gpt-5.4，
+//     billingModel == normalizedModel，模型族未变。此时返回 originalModel
+//     保留 -xhigh 等用户语义。
+//
+//  3. originalModel == billingModel：直接返回，等价于无映射。
+//
+// 任一参数为空时退回 originalModel，避免返回空 model。
+func chooseRespondedAnthropicModel(originalModel, normalizedModel, billingModel string) string {
+	original := strings.TrimSpace(originalModel)
+	normalized := strings.TrimSpace(normalizedModel)
+	billing := strings.TrimSpace(billingModel)
+	if billing == "" {
+		return original
+	}
+	if normalized == "" {
+		// 没有规范化信息时只能根据 original vs billing 判断
+		if billing != original {
+			return billing
+		}
+		return original
+	}
+	if billing != normalized {
+		return billing
+	}
+	// 仅是后缀剥离 / 大小写归一，保留客户端原值
+	if original != "" {
+		return original
+	}
+	return billing
 }
